@@ -1,0 +1,176 @@
+---
+title: "Project ML"
+author: "Teodor Nedevski"
+date: "2025-03-21"
+output: html_document
+--- 
+
+## Introduction
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+The goal of this project is to utilize sensor data from wearable devices (ex. Fitbit) to construct a predictor algorithm for determining how well the exercise is being performed (ecercise is Dumbell Curles).
+Based on the various sensor readings (accelerometer, magnetometer, etc) that correspond to movements of the user on certain body parts. The data of the movement and the exercise style being performed is gthen recorded as a category. 
+The model I constructed estimates the category (exercise style) based on the movement data. 
+
+## Dataset
+
+the dataset is attained from [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har)
+The dataset contains X, Y and where applicable, Z measurements, for the gyro, accelerometer and magnetometer, as well as roll, pitch and yaw for the various belt, forearm, arm, and dumbell. 
+The ecxercise style (some styles are correct and some are incorrect representations of what the actual exercise is supposed to look like) for each entry is also recorded as a category.
+
+
+## Exploratory analysis
+
+```{r}
+# Load libraries
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+# Load datasets
+pmltrain <- read.csv("pml-training.csv")
+pmltest <- read.csv("pml-testing.csv")
+
+# Remove columns with mostly NA values
+pmltrain <- pmltrain[, colSums(is.na(pmltrain)) < nrow(pmltrain) * 0.95]
+pmltest <- pmltest[, colSums(is.na(pmltest)) < nrow(pmltest) * 0.95]
+
+# Remove identifier variables
+pmltrain <- pmltrain[, !grepl("^(X|user_name|new_window)", names(pmltrain))]
+pmltest <- pmltest[, !grepl("^(X|user_name|new_window)", names(pmltest))]
+
+# Convert integer variables to numeric if necessary
+pmltrain$total_accel_belt <- as.numeric(pmltrain$total_accel_belt)
+pmltrain$total_accel_arm <- as.numeric(pmltrain$total_accel_arm)
+pmltrain$total_accel_dumbbell <- as.numeric(pmltrain$total_accel_dumbbell)
+pmltrain$total_accel_forearm <- as.numeric(pmltrain$total_accel_forearm)
+
+
+```
+
+
+A table considering the relationships between the variables
+```{r}
+library(corrplot)
+library(ggplot2)
+library(dplyr)
+
+# Convert classe to factor for better visualization
+pmltrain$classe <- as.factor(pmltrain$classe)
+
+# Sample data for better visualization performance
+set.seed(123)
+sampled_data <- pmltrain %>% sample_n(5000)
+
+# Select numeric variables from one body part (e.g., belt)
+belt_vars <- sampled_data %>%
+  select(roll_belt, pitch_belt, yaw_belt, total_accel_belt, 
+         gyros_belt_x, gyros_belt_y, gyros_belt_z,
+         accel_belt_x, accel_belt_y, accel_belt_z,
+         magnet_belt_x, magnet_belt_y, magnet_belt_z)
+
+# Calculate correlation matrix
+cor_matrix <- cor(belt_vars, use = "complete.obs")
+
+# Plot correlation matrix
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         title = "Correlation Between Belt Sensor Variables")
+```
+
+Example of specific readings: X vs Y axis of magnetometer devided by data
+```{r}
+# Plot 5: Magnetometer readings from belt
+ggplot(sampled_data, aes(x = magnet_belt_x, y = magnet_belt_y, color = classe)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "Belt Magnetometer Readings by Exercise Class", 
+       x = "Magnetometer X", 
+       y = "Magnetometer Y")
+```
+
+All of the exercise classes divided to cionsider their roll, pitch, yaw relationhip
+```{r}
+# Faceted plot of roll, pitch, yaw for belt by class
+ggplot(sampled_data, aes(x = roll_belt, y = pitch_belt, color = yaw_belt)) +
+  geom_point() +
+  facet_wrap(~ classe) +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(title = "Belt Orientation by Exercise Class", 
+       x = "Roll", 
+       y = "Pitch", 
+       color = "Yaw")
+```
+
+
+## Model selection
+From the graphs in the exploration we can see that for each category exercise there are some specific landmarks in the data which suggests a good fir for the model would be a random forest. The model is trained on 70% of the training data and corss validated on the remaining 30%
+
+```{r}
+# Load necessary libraries
+library(caret)
+library(randomForest)
+library(dplyr)
+
+# Load the data
+training <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+
+# Data preprocessing
+# Remove columns with high percentage of missing values
+threshold <- 0.95
+training <- training[, colMeans(is.na(training)) < threshold]
+
+# Remove non-predictive columns
+training <- training %>% select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+
+# Convert 'classe' to factor
+training$classe <- as.factor(training$classe)
+
+# Split the data into training and validation sets
+set.seed(123)
+inTrain <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+trainSet <- training[inTrain,]
+validSet <- training[-inTrain,]
+
+# Train the Random Forest model
+set.seed(123)
+rfModel <- randomForest(classe ~ ., data = trainSet, ntree = 500, importance = TRUE)
+```
+## Model Validation results
+
+here the confusion matrix and the results of the model accuracy fit are given:
+```{r}
+# Make predictions on the validation set
+predictions <- predict(rfModel, validSet)
+
+# Calculate accuracy
+accuracy <- confusionMatrix(predictions, validSet$classe)$overall["Accuracy"]
+print(paste("Model Accuracy:", round(accuracy, 4)))
+
+# Print confusion matrix
+print(confusionMatrix(predictions, validSet$classe))
+```
+
+The results are quite encouraging, with minimal miss-fits of the data and a super small p-val.
+This however does raise some concerns over a potential data over fit. lets explore the test data to see if this is indeed the case
+
+## Test Data Results (Quiz)
+
+```{r}
+results <- predict(rfModel, pmltest)
+results
+```
+ when comparing these results to the quiz, the predictions are 100% accurate, showing that when the test conditions are re-created the model is successful in predicting the exercise category - the precise way the exercise was conducted (correct or incorrect)
+
+## Conclusion
+The model serves as a proof of concept that the exercise data can be modeled and used as a predictor to determine if the user of the wearable devices is indeed performing that exercise correctly or not. 
+The experimental trial was conducted under very specific circumstances with tighter control and more sensors than a typical wearable device, so further investigation is needed to determine if using only one sensor can be used to predict the accuracy of the users exercise regime. 
+
+
+### Citations:
+[1] http://groupware.les.inf.puc-rio.br/har
+
+
+
